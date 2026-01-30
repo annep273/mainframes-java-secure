@@ -1,0 +1,17 @@
+apiVersion: v2
+name: mainframes-java-app
+description: A Helm chart for deploying Mainframes Java Application on OpenShift s390x
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - java
+  - spring-boot
+  - openshift
+  - s390x
+maintainers:
+  - name: Mainframes Team
+    email: support@mainframes.com
+home: https://github.com/yourusername/mainframes-java
+sources:
+  - https://github.com/yourusername/mainframes-java

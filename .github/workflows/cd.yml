@@ -1,0 +1,260 @@
+name: CD - Build and Deploy to OpenShift s390x
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  REGISTRY: quay.io
+  IMAGE_NAME: ${{ secrets.REGISTRY_NAMESPACE }}/mainframes-java-app
+  JAVA_VERSION: '17'
+  HELM_VERSION: 'v3.13.0'
+
+jobs:
+  build-and-push-s390x:
+    name: Build Multi-Arch Image for s390x
+    runs-on: ubuntu-latest
+    
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+      
+      - name: Build application with Maven
+        run: |
+          echo "Building application..."
+          mvn clean package -DskipTests
+          echo "Build completed successfully"
+      
+      - name: Set up QEMU for multi-arch builds
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/s390x
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64,linux/s390x
+          driver-opts: |
+            network=host
+            image=moby/buildkit:latest
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+      
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/s390x
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:buildcache,mode=max
+          build-args: |
+            BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+            VCS_REF=${{ github.sha }}
+            VERSION=${{ steps.meta.outputs.version }}
+      
+      - name: Verify image architecture
+        run: |
+          echo "Verifying s390x image architecture..."
+          docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+      
+      - name: Scan image for vulnerabilities with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+      
+      - name: Upload Trivy scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+      
+      - name: Fail on critical vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'
+
+  deploy-to-openshift:
+    name: Deploy to OpenShift s390x
+    runs-on: ubuntu-latest
+    needs: build-and-push-s390x
+    environment: 
+      name: ${{ github.event.inputs.environment || 'staging' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install OpenShift CLI
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4.14"
+          skip_cache: true
+      
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+      
+      - name: Log in to OpenShift
+        run: |
+          echo "Logging in to OpenShift cluster..."
+          oc login --token=${{ secrets.OPENSHIFT_TOKEN }} --server=${{ secrets.OPENSHIFT_SERVER }}
+          oc project ${{ secrets.OPENSHIFT_NAMESPACE }} || oc new-project ${{ secrets.OPENSHIFT_NAMESPACE }}
+      
+      - name: Create ImagePullSecret if needed
+        run: |
+          if ! oc get secret quay-pull-secret -n ${{ secrets.OPENSHIFT_NAMESPACE }} 2>/dev/null; then
+            echo "Creating image pull secret..."
+            oc create secret docker-registry quay-pull-secret \
+              --docker-server=${{ env.REGISTRY }} \
+              --docker-username=${{ secrets.REGISTRY_USERNAME }} \
+              --docker-password=${{ secrets.REGISTRY_PASSWORD }} \
+              -n ${{ secrets.OPENSHIFT_NAMESPACE }}
+          else
+            echo "Image pull secret already exists"
+          fi
+      
+      - name: Verify Helm chart
+        run: |
+          echo "Validating Helm chart..."
+          helm lint helm/mainframes-java-app
+          helm template mainframes-java-app helm/mainframes-java-app \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set image.tag=${{ needs.build-and-push-s390x.outputs.image_tag }} \
+            --dry-run --debug
+      
+      - name: Deploy with Helm
+        run: |
+          echo "Deploying application to OpenShift..."
+          helm upgrade --install mainframes-java-app \
+            helm/mainframes-java-app \
+            --namespace ${{ secrets.OPENSHIFT_NAMESPACE }} \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set image.tag=${{ needs.build-and-push-s390x.outputs.image_tag }} \
+            --set image.pullSecrets[0].name=quay-pull-secret \
+            --set route.host=${{ secrets.OPENSHIFT_ROUTE_HOST }} \
+            --set nodeSelector."kubernetes\.io/arch"=s390x \
+            --wait --timeout 10m
+      
+      - name: Verify deployment
+        run: |
+          echo "Verifying deployment status..."
+          oc rollout status deployment/mainframes-java-app -n ${{ secrets.OPENSHIFT_NAMESPACE }}
+          
+          echo "Getting pod information..."
+          oc get pods -n ${{ secrets.OPENSHIFT_NAMESPACE }} -l app.kubernetes.io/name=mainframes-java-app
+          
+          echo "Checking pod architecture..."
+          POD_NAME=$(oc get pods -n ${{ secrets.OPENSHIFT_NAMESPACE }} -l app.kubernetes.io/name=mainframes-java-app -o jsonpath='{.items[0].metadata.name}')
+          oc exec -n ${{ secrets.OPENSHIFT_NAMESPACE }} $POD_NAME -- uname -m
+      
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests..."
+          ROUTE=$(oc get route mainframes-java-app -n ${{ secrets.OPENSHIFT_NAMESPACE }} -o jsonpath='{.spec.host}')
+          echo "Application URL: https://${ROUTE}"
+          
+          # Wait for application to be ready
+          timeout 300 bash -c "until curl -f -k https://${ROUTE}/actuator/health; do sleep 5; done"
+          
+          # Test health endpoint
+          curl -f -k https://${ROUTE}/actuator/health || exit 1
+          
+          # Test API endpoint
+          curl -f -k https://${ROUTE}/api/v1/health || exit 1
+          
+          echo "Smoke tests passed successfully"
+      
+      - name: Deployment summary
+        if: success()
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo "Environment: ${{ github.event.inputs.environment || 'staging' }}"
+          echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push-s390x.outputs.image_tag }}"
+          echo "Namespace: ${{ secrets.OPENSHIFT_NAMESPACE }}"
+          ROUTE=$(oc get route mainframes-java-app -n ${{ secrets.OPENSHIFT_NAMESPACE }} -o jsonpath='{.spec.host}')
+          echo "Application URL: https://${ROUTE}"
+
+  rollback:
+    name: Rollback Deployment
+    runs-on: ubuntu-latest
+    needs: deploy-to-openshift
+    if: failure()
+    
+    steps:
+      - name: Install OpenShift CLI
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4.14"
+      
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: ${{ env.HELM_VERSION }}
+      
+      - name: Log in to OpenShift
+        run: |
+          oc login --token=${{ secrets.OPENSHIFT_TOKEN }} --server=${{ secrets.OPENSHIFT_SERVER }}
+          oc project ${{ secrets.OPENSHIFT_NAMESPACE }}
+      
+      - name: Rollback Helm release
+        run: |
+          echo "Rolling back to previous release..."
+          helm rollback mainframes-java-app -n ${{ secrets.OPENSHIFT_NAMESPACE }}
+          
+          echo "Waiting for rollback to complete..."
+          oc rollout status deployment/mainframes-java-app -n ${{ secrets.OPENSHIFT_NAMESPACE }}
+          
+          echo "Rollback completed"

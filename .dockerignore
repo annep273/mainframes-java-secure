@@ -1,0 +1,52 @@
+# Maven build artifacts
+target/
+*.jar
+*.war
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+.project
+.classpath
+.settings/
+
+# Documentation
+README.md
+CHANGELOG.md
+docs/
+*.md
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+Jenkinsfile
+
+# Helm charts (build separately)
+helm/
+
+# Test files
+src/test/
+**/test/**
+
+# Development files
+*.env
+.env.local
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+Dockerfile.ubi
+docker-compose*.yml
