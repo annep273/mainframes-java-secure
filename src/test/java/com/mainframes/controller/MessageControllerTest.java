@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.mainframes.model.Message;
 import com.mainframes.model.MessageRequest;
 import com.mainframes.service.MessageService;
+import io.github.bucket4j.Bucket;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -31,6 +33,15 @@ class MessageControllerTest {
 
     @MockBean
     private MessageService messageService;
+
+    @MockBean
+    private Bucket rateLimitBucket;
+
+    @BeforeEach
+    void setUp() {
+        // Mock the rate limiter to always allow requests in tests
+        when(rateLimitBucket.tryConsume(1)).thenReturn(true);
+    }
 
     @Test
     void testGetAllMessages() throws Exception {

@@ -1,6 +1,6 @@
 # Alternative Dockerfile using Red Hat UBI for OpenShift
 # Multi-stage build for s390x architecture
-FROM --platform=linux/s390x registry.access.redhat.com/ubi9/openjdk-17:1.18 AS build
+FROM --platform=linux/s390x registry.access.redhat.com/ubi9/openjdk-21:1.20 AS build
 
 USER root
 WORKDIR /app
@@ -16,7 +16,7 @@ COPY src ./src
 RUN mvn clean package -DskipTests
 
 # Runtime stage
-FROM --platform=linux/s390x registry.access.redhat.com/ubi9/openjdk-17-runtime:1.18
+FROM --platform=linux/s390x registry.access.redhat.com/ubi9/openjdk-21-runtime:1.20
 
 LABEL maintainer="Mainframes Team <support@mainframes.com>" \
       description="Production runtime for Mainframes Java Application on s390x OpenShift" \

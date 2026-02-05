@@ -2,6 +2,8 @@ package com.mainframes.controller;
 
 import com.mainframes.model.HealthResponse;
 import com.mainframes.service.HealthService;
+import io.github.bucket4j.Bucket;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -24,6 +26,15 @@ class HealthControllerTest {
     @MockBean
     private HealthService healthService;
 
+    @MockBean
+    private Bucket rateLimitBucket;
+
+    @BeforeEach
+    void setUp() {
+        // Mock the rate limiter to always allow requests in tests
+        when(rateLimitBucket.tryConsume(1)).thenReturn(true);
+    }
+
     @Test
     void testHealthEndpoint() throws Exception {
         HealthResponse healthResponse = HealthResponse.builder()
@@ -33,7 +44,7 @@ class HealthControllerTest {
                 .timestamp(LocalDateTime.now())
                 .architecture("s390x")
                 .operatingSystem("Linux")
-                .javaVersion("17")
+                .javaVersion("21")
                 .usedMemoryMB(100L)
                 .maxMemoryMB(512L)
                 .build();

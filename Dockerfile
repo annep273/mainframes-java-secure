@@ -1,6 +1,6 @@
 # Multi-stage Dockerfile for s390x architecture
 # Stage 1: Build stage
-FROM --platform=linux/s390x maven:3.9-eclipse-temurin-17 AS build
+FROM --platform=linux/s390x maven:3.9-eclipse-temurin-21 AS build
 
 LABEL maintainer="Mainframes Team <support@mainframes.com>"
 LABEL description="Build stage for Mainframes Java Application"
@@ -18,7 +18,7 @@ RUN mvn clean package -DskipTests && \
     jar -xf ../*.jar
 
 # Stage 2: Runtime stage
-FROM --platform=linux/s390x eclipse-temurin:17-jre-jammy
+FROM --platform=linux/s390x eclipse-temurin:21-jre-jammy
 
 LABEL maintainer="Mainframes Team <support@mainframes.com>"
 LABEL description="Production runtime for Mainframes Java Application on s390x"
